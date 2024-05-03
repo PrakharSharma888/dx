@@ -25,7 +25,7 @@ contract SoulBoundToken is ERC721, ERC721URIStorage, ERC721Burnable, Ownable {
         developer = _address;
     }
 
-    function registerAsSeller(address _address) public{
+    function registerAsAdmin(address _address) public{
         admin = _address;
     }
 

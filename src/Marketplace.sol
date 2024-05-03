@@ -1,132 +1,156 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.4;
+pragma solidity 0.8.20;
 
-import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "./SoulBoundToken.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-// Make sure this interface is correctly defined based on the actual SoulboundToken contract
-interface SoulboundToken {
-    function isSeller(address _seller) external view returns (bool);
-}
 
-contract Marketplace is ERC721URIStorage, ReentrancyGuard, Ownable {
-    uint private _itemIds;
-    uint private _itemsSold;
+error NotSoulBoundSeller();
+error PriceNotMet(address nftAddress, uint256 tokenId, uint256 price);
+error ItemNotForSale(address nftAddress, uint256 tokenId);
+error NotListed(address nftAddress, uint256 tokenId);
+error AlreadyListed(address nftAddress, uint256 tokenId);
+error NoProceeds();
+error NotOwner();
+error NotApprovedForMarketplace();
+error PriceMustBeAboveZero();
 
+
+contract NftMarketplace is ReentrancyGuard {
     address payable marketplaceOwner;
     address public soulboundAddress;
 
-    struct Product {
-        uint itemId;
-        address payable seller;
-        string name;
-        string description;
-        uint price;
-        uint stock;
-        bool isActive;
+    constructor(address _soulboundAddress){
+    marketplaceOwner = payable(msg.sender);
+    soulboundAddress = _soulboundAddress;
+}
+
+    mapping(address => mapping(uint256 => Listing)) private s_listings;
+    mapping(address => uint256) private s_proceeds;
+
+
+    struct Listing {
+        uint256 price;
+        address seller;
     }
 
-    mapping(uint => Product) private idToProduct;
-    mapping(address => uint[]) private sellerToProducts;
-    mapping(address => uint[]) private buyerToPurchases;
+    event ItemListed(
+        address indexed seller,
+        address indexed nftAddress,
+        uint256 indexed tokenId,
+        uint256 price
+    );
 
-    constructor(address _soulboundAddress) ERC721("MarketplaceItems", "MPI") Ownable(msg.sender) {
-        marketplaceOwner = payable(msg.sender);
-        soulboundAddress = _soulboundAddress;
-    }
+    event ItemCanceled(
+        address indexed seller,
+        address indexed nftAddress,
+        uint256 indexed tokenId
+    );
 
-    // Event declarations
-    event ProductAdded(uint indexed itemId, address indexed seller, string name, uint stock);
-    event ProductUpdated(uint indexed itemId, string name, uint stock);
-    event ProductDeleted(uint indexed itemId);
-    event ProductPurchased(uint indexed itemId, address indexed buyer, uint quantity);
+    event ItemBought(
+        address indexed buyer,
+        address indexed nftAddress,
+        uint256 indexed tokenId,
+        uint256 price
+    );
+    event ProceedsWithdrawn(address seller,uint256 amount);
 
-    // Modifier to check if the caller is a verified seller
-    modifier onlyVerifiedSeller() {
-        require(SoulboundToken(soulboundAddress).isSeller(msg.sender), "Caller is not a verified seller");
+   
+
+    modifier notListed(address nftAddress,uint256 tokenId) {
+        Listing memory listing = s_listings[nftAddress][tokenId];
+        if (listing.price > 0) {
+            revert AlreadyListed(nftAddress, tokenId);
+        }
         _;
     }
 
-    // Add a new product to the marketplace
-    function addProduct(string memory name, string memory description, uint price, uint stock) public onlyVerifiedSeller {
-        uint itemId = _itemIds++;
-        idToProduct[itemId] = Product({
-            itemId: itemId,
-            seller: payable(msg.sender),
-            name: name,
-            description: description,
-            price: price,
-            stock: stock,
-            isActive: true
-        });
-
-        sellerToProducts[msg.sender].push(itemId);
-
-        _mint(msg.sender, itemId);
-        _setTokenURI(itemId, "URI placeholder");
-
-        emit ProductAdded(itemId, msg.sender, name, stock);
+    modifier isListed(address nftAddress, uint256 tokenId) {
+        Listing memory listing = s_listings[nftAddress][tokenId];
+        if (listing.price <= 0) {
+            revert NotListed(nftAddress, tokenId);
+        }
+        _;
     }
 
-    // List all products a seller has listed
-    function listProductsBySeller(address seller) public view returns (Product[] memory) {
-        uint[] memory productIds = sellerToProducts[seller];
-        Product[] memory products = new Product[](productIds.length);
-
-        for (uint i = 0; i < productIds.length; i++) {
-            products[i] = idToProduct[productIds[i]];
+    modifier isSeller(address nftAddress,uint256 tokenId,address spender) {
+        SoulBoundToken soulBound = SoulBoundToken(soulboundAddress);
+        if(soulBound.ownerOf(tokenId) != spender){
+            revert NotSoulBoundSeller();
         }
-
-        return products;
+        IERC721 nft = IERC721(nftAddress);
+        address owner = nft.ownerOf(tokenId);
+        if (spender != owner) {
+            revert NotOwner();
+        }
+        _;
     }
 
-    // List all products a user has purchased
-    function listPurchasesByBuyer(address buyer) public view returns (Product[] memory) {
-        uint[] memory productIds = buyerToPurchases[buyer];
-        Product[] memory products = new Product[](productIds.length);
-
-        for (uint i = 0; i < productIds.length; i++) {
-            products[i] = idToProduct[productIds[i]];
+    function listItem(address nftAddress, uint256 tokenId, uint256 price)external notListed(nftAddress, tokenId) isSeller(nftAddress, tokenId, msg.sender)
+    {
+        if (price <= 0) {
+            revert PriceMustBeAboveZero();
         }
-
-        return products;
+        IERC721 nft = IERC721(nftAddress);
+        if (nft.getApproved(tokenId) != address(this)) {
+            revert NotApprovedForMarketplace();
+        }
+        s_listings[nftAddress][tokenId] = Listing(price, msg.sender);
+        emit ItemListed(msg.sender, nftAddress, tokenId, price);
     }
 
-    // List all unsold products
-    function listUnsoldProducts() public view returns (Product[] memory) {
-        uint count;
-        for (uint i = 0; i < _itemIds; i++) {
-            if (idToProduct[i].stock > 0 && idToProduct[i].isActive) {
-                count++;
-            }
-        }
-
-        Product[] memory unsold = new Product[](count);
-        uint index = 0;
-        for (uint i = 0; i < _itemIds; i++) {
-            if (idToProduct[i].stock > 0 && idToProduct[i].isActive) {
-                unsold[index] = idToProduct[i];
-                index++;
-            }
-        }
-
-        return unsold;
+  
+    function cancelListing(address nftAddress, uint256 tokenId)external isSeller(nftAddress, tokenId, msg.sender) isListed(nftAddress, tokenId)
+    {
+        emit ItemCanceled(msg.sender, nftAddress, tokenId);
+        delete (s_listings[nftAddress][tokenId]);
+        
     }
 
-    // Purchase a product
-    function purchaseProduct(uint itemId, uint quantity) public payable nonReentrant {
-        Product storage product = idToProduct[itemId];
-        require(product.isActive, "Product is not active");
-        require(product.stock >= quantity, "Insufficient stock");
-        require(msg.value == product.price * quantity, "Incorrect amount sent");
+    function buyItem(address nftAddress, uint256 tokenId)external payable isListed(nftAddress, tokenId) nonReentrant
+    {
+        Listing memory listedItem = s_listings[nftAddress][tokenId];
+        if (msg.value < listedItem.price) {
+            revert PriceNotMet(nftAddress, tokenId, listedItem.price);
+        }
+        emit ItemBought(msg.sender, nftAddress, tokenId, listedItem.price);
+        s_proceeds[listedItem.seller] += msg.value;
+        delete (s_listings[nftAddress][tokenId]);
+    
+        IERC721(nftAddress).safeTransferFrom(listedItem.seller, msg.sender, tokenId);
+        
+    }
 
-        product.stock -= quantity;
-        _itemsSold++;
+    function updateListing(address nftAddress,uint256 tokenId,uint256 newPrice) external isListed(nftAddress, tokenId) nonReentrant isSeller(nftAddress, tokenId, msg.sender)
+    {
+        if (newPrice <= 0) {
+            revert PriceMustBeAboveZero();
+        }
+        s_listings[nftAddress][tokenId].price = newPrice;
+        emit ItemListed(msg.sender, nftAddress, tokenId, newPrice);
+    }
 
-        product.seller.transfer(msg.value);
-        buyerToPurchases[msg.sender].push(itemId);
+   
+    function withdrawProceeds() public nonReentrant{
+         uint256 proceeds = s_proceeds[msg.sender];
+        if (proceeds <= 0) {
+            revert NoProceeds();
+        }
+        emit ProceedsWithdrawn(msg.sender, proceeds);
+        s_proceeds[msg.sender] = 0;
+        (bool success, ) = payable(msg.sender).call{value: proceeds}("");
+        require(success, "Transfer failed");
+    }
 
-        emit ProductPurchased(itemId, msg.sender, quantity);
+
+    function getListing(address nftAddress, uint256 tokenId) external view returns (Listing memory)
+    {
+        return s_listings[nftAddress][tokenId];
+    }
+
+    function getProceeds(address seller) external view returns (uint256) {
+        return s_proceeds[seller];
     }
 }

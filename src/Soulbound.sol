@@ -1,44 +1,36 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.4;
+pragma solidity 0.8.20;
 
-import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Burnable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract SoulboundToken is ERC721Enumerable, Ownable {
-    uint private sellerTokenId = 1;
-    uint private adminTokenId = 10001;
+contract SoulBoundToken is ERC721, ERC721URIStorage, ERC721Burnable,Ownable {
+    uint256 private _nextTokenId;
 
-    constructor() ERC721("SoulboundToken", "SBT") Ownable(msg.sender) {}
+    constructor(address initialOwner)
+        ERC721("SOULSELLER", "SSR")
+        Ownable(initialOwner)
+    {}
 
-    // Mint a new Soulbound Token for sellers
-    function mintSeller(address to) public onlyOwner {
-        _mint(to, sellerTokenId);
-        sellerTokenId++;
+    function safeMint(address to, string memory uri) public onlyOwner {
+        uint256 tokenId = _nextTokenId++;
+        _safeMint(to, tokenId);
+        _setTokenURI(tokenId,uri);
     }
-
-    // Mint a new Soulbound Token for admins
-    function mintAdmin(address to) public onlyOwner {
-        _mint(to, adminTokenId);
-        adminTokenId++;
+    function burn(uint256 tokenId) public override{
+        super._burn(tokenId);
     }
-
-    // Prevent transferring of tokens to make them soulbound
-    function _beforeTokenTransfer(address from, address to, uint256 tokenId) internal override(ERC721, ERC721Enumerable) {
-        super._beforeTokenTransfer(from, to, tokenId); // Call the parent function
-        require(from == address(0), "SoulboundToken: tokens are non-transferable");
+    function tokenURI(uint256 tokenId) public view override (ERC721,ERC721URIStorage) returns (string memory){
+        return super.tokenURI(tokenId);
     }
-
-    function supportsInterface(bytes4 interfaceId) public view override(ERC721, ERC721Enumerable) returns (bool) {
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC721, ERC721URIStorage)
+        returns (bool)
+    {
         return super.supportsInterface(interfaceId);
-    }
-
-    // Check if a user is an admin
-    function isAdmin(address user) public view returns (bool) {
-        return balanceOf(user) > 0 && tokenOfOwnerByIndex(user, 0) >= 10001;
-    }
-
-    // Check if a user is a seller
-    function isSeller(address user) public view returns (bool) {
-        return balanceOf(user) > 0 && tokenOfOwnerByIndex(user, 0) < 10001;
     }
 }
